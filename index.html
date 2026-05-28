@@ -370,7 +370,7 @@
 
   <div class="chart-card wide">
     <h2>1. Where Can This Income Afford Rent?</h2>
-    <div class="chart-desc">State map colored by rent burden using the selected annual income. Click a state to zoom in.</div>
+    <div class="chart-desc">State map colored by rent burden using the selected annual income</div>
     <svg id="chart1" width="100%" height="480"></svg>
     <div class="legend-row">
       <span class="legend-dot" style="background:#7dd87d;"></span><span>Affordable</span>
@@ -439,14 +439,6 @@ const tooltip = d3.select("#tooltip");
 let ZIP_DATA = [];
 let STATE_DATA = [];
 let US_STATES = null;
-let activeState = d3.select(null); // Tracks currently focused state vector element
-
-// Global camera behavior configuration
-const mapZoom = d3.zoom()
-  .scaleExtent([1, 8])
-  .on("zoom", (event) => {
-    d3.select("#map-zoom-group").attr("transform", event.transform);
-  });
 
 const stateToFips = {
   "AL":"01","AK":"02","AZ":"04","AR":"05","CA":"06","CO":"08","CT":"09","DE":"10","DC":"11",
@@ -611,9 +603,6 @@ function getSalaryStateData(salary) {
 function drawSalaryMap(stateData, salary) {
   const { svg, W, H } = chartFrame("chart1", 480);
 
-  // Apply zoom listener configuration
-  svg.call(mapZoom);
-
   const dataByFips = new Map(stateData.map(d => [d.fips, d]));
 
   const projection = d3.geoAlbersUsa()
@@ -621,19 +610,9 @@ function drawSalaryMap(stateData, salary) {
 
   const path = d3.geoPath(projection);
 
-  // Background interaction capture node to let users reset view via void clicks
-  svg.append("rect")
-    .attr("width", W)
-    .attr("height", H)
-    .attr("fill", "transparent")
-    .on("click", (event) => resetZoom(event, svg));
-
-  // Isolated node container to accumulate dynamic coordinate transformations safely
-  const mapGroup = svg.append("g")
-    .attr("id", "map-zoom-group")
-    .attr("transform", "translate(15, 10)");
-
-  mapGroup.selectAll("path")
+  svg.append("g")
+    .attr("transform", "translate(15, 10)")
+    .selectAll("path")
     .data(US_STATES)
     .enter()
     .append("path")
@@ -646,11 +625,7 @@ function drawSalaryMap(stateData, salary) {
     })
     .attr("opacity", d => {
       const fips = String(d.id).padStart(2, "0");
-      if (activeState.node() && activeState.datum().id === d.id) return 1.0;
-      return activeState.node() ? 0.25 : 0.95;
-    })
-    .on("click", function(event, d) {
-      clickedState(event, d, this, path, W, H, svg);
+      return dataByFips.has(fips) ? 0.95 : 0.35;
     })
     .on("mousemove", (event, d) => {
       const fips = String(d.id).padStart(2, "0");
@@ -662,7 +637,7 @@ function drawSalaryMap(stateData, salary) {
         .style("left", event.clientX + 14 + "px")
         .style("top", event.clientY + 14 + "px")
         .html(`
-          <strong>${row.state}</strong> <span style="color:var(--accent); font-size:8px;">(Click to Zoom)</span><br>
+          <strong>${row.state}</strong><br>
           Selected income: ${formatDollar(salary)}<br>
           Avg monthly rent: ${formatDollar(row.avg_monthly_rent)}<br>
           Rent burden: ${formatPercent(row.salary_rent_burden_percent)}<br>
@@ -679,63 +654,10 @@ function drawSalaryMap(stateData, salary) {
     .attr("y", H - 18)
     .attr("class", "axis-label")
     .attr("text-anchor", "middle")
-    .text(`${affordableStates} states are affordable at ${formatDollar(salary)}. Click any state to isolate.`);
+    .text(`${affordableStates} states are affordable at ${formatDollar(salary)} using the 30% rule`);
 
   document.getElementById("insight1").textContent =
     `▲ FINDING: At ${formatDollar(salary)}, ${affordableStates} states are affordable on average.`;
-}
-
-function clickedState(event, d, element, path, W, H, svg) {
-  event.stopPropagation();
-
-  // Reset zoom back if active selection re-clicked
-  if (activeState.node() === element) return resetZoom(event, svg);
-
-  activeState = d3.select(element);
-
-  // Calculate geometric bounds mapping for targeted selection box boundaries
-  const [[x0, y0], [x1, y1]] = path.bounds(d);
-
-  svg.transition()
-    .duration(750)
-    .call(
-      mapZoom.transform,
-      d3.zoomIdentity
-        .translate(W / 2, H / 2)
-        .scale(Math.min(8, 0.85 / Math.max((x1 - x0) / W, (y1 - y0) / H)))
-        .translate(-(x0 + x1) / 2, -(y0 + y1) / 2)
-    );
-
-  // Smooth opacity modulation highlight filter rules
-  d3.selectAll(".state")
-    .transition()
-    .duration(300)
-    .attr("opacity", 0.25);
-
-  activeState.transition().duration(300).attr("opacity", 1.0);
-
-  // Synchronize drop-down control inputs to follow click context choice
-  const stateRow = STATE_DATA.find(s => s.fips === String(d.id).padStart(2, "0"));
-  if (stateRow) {
-    const selector = document.getElementById("stateSelect");
-    selector.value = stateRow.state;
-    // Re-draw chart card #2 content matching target choice context
-    const currentSalary = +document.getElementById("salarySlider").value;
-    drawWorstZipByState(getSalaryZipData(currentSalary), stateRow.state, currentSalary);
-  }
-}
-
-function resetZoom(event, svg) {
-  activeState = d3.select(null);
-
-  svg.transition()
-    .duration(750)
-    .call(mapZoom.transform, d3.zoomIdentity);
-
-  d3.selectAll(".state")
-    .transition()
-    .duration(500)
-    .attr("opacity", 0.95);
 }
 
 function drawWorstZipByState(zipData, selectedState, salary) {
@@ -1164,7 +1086,7 @@ Promise.all([
 }).catch(err => {
   console.error(err);
   document.getElementById("loading").textContent =
-    "DATA LOAD FAILED. Verify folder pathing properties match expected defaults.";
+    "DATA LOAD FAILED. Make sure your folder is set up as: CanILiveThere/index.html and CanILiveThere/datasets/rent_income_zip_clean.csv + rent_income_state_clean.csv. Also run this with Live Server.";
 });
 </script>
 </body>
