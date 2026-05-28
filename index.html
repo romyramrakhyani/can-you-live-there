@@ -342,11 +342,19 @@
 <div class="method-box">
   <h2>How affordability is calculated</h2>
   <p>
-    Monthly rent is compared to monthly income using the 30% affordability rule. If rent takes 30% or less of income, it is considered affordable. This project also calculates the annual income required to afford each ZIP code’s rent: monthly rent × 12 ÷ 0.30.
+    Monthly rent is compared to monthly income using the 30% affordability rule. If rent takes 30% or less of income, it is considered affordable. This project also calculates the annual income required to afford each ZIP code’s rent: monthly rent × 12 ÷ 0.30. When analyzing a family of four, we incorporate empirical baseline cost metrics from the uploaded EPI family budgets dataset.
   </p>
 </div>
 
 <div class="control-box">
+  <div class="control-row">
+    <label for="incomeType">Household Context:</label>
+    <select id="incomeType">
+      <option value="individual">Individual Earner</option>
+      <option value="family4">Family of 4 (EPI Living Cost Benchmarks)</option>
+    </select>
+  </div>
+
   <div class="control-row">
     <label for="salarySlider">Annual Income:</label>
     <input id="salarySlider" type="range" min="30000" max="250000" step="5000" value="75000">
@@ -433,12 +441,15 @@
 <script>
 const ZIP_FILE = "./datasets/rent_income_zip_clean.csv";
 const STATE_FILE = "./datasets/rent_income_state_clean.csv";
+const COUNTY_FILE = "./datasets/us_cost_of_living_dataset.csv"; // Your newly uploaded file
 
 const tooltip = d3.select("#tooltip");
 
 let ZIP_DATA = [];
 let STATE_DATA = [];
 let US_STATES = null;
+let FAMILY_STATE_BUDGETS = new Map(); // Index map to hold family-of-4 data metrics by state
+let NATIONAL_FAMILY_MEDIAN = 115000;  // Fallback default dynamic benchmark marker value
 
 const stateToFips = {
   "AL":"01","AK":"02","AZ":"04","AR":"05","CA":"06","CO":"08","CT":"09","DE":"10","DC":"11",
@@ -534,13 +545,11 @@ function cleanData(zipData, stateData) {
     d.avg_monthly_income = +d.avg_monthly_income;
     d.local_rent_burden = +d.rent_burden;
     d.local_rent_burden_percent = +d.rent_burden_percent;
-    d.required_income = d.monthly_rent * 12 / 0.30;
   });
 
   zipData = zipData.filter(d =>
     isFinite(d.monthly_rent) &&
     isFinite(d.avg_annual_income) &&
-    isFinite(d.required_income) &&
     d.monthly_rent > 0 &&
     d.avg_annual_income > 0
   );
@@ -566,33 +575,46 @@ function cleanData(zipData, stateData) {
   return { zipData, stateData };
 }
 
+// Factor in housing scale premiums dynamically (Family housing premium adjustment)
+function getRentMultiplier() {
+  const type = document.getElementById("incomeType").value;
+  return type === "family4" ? 1.25 : 1.0;
+}
+
 function getSalaryZipData(salary) {
+  const rentMultiplier = getRentMultiplier();
   const monthlyIncome = salary / 12;
   const monthlyBudget = salary * 0.30 / 12;
 
   return ZIP_DATA.map(d => {
-    const burden = d.monthly_rent / monthlyIncome;
-    const overBudget = d.monthly_rent - monthlyBudget;
+    const adjustedRent = d.monthly_rent * rentMultiplier;
+    const burden = adjustedRent / monthlyIncome;
+    const overBudget = adjustedRent - monthlyBudget;
 
     return {
       ...d,
+      display_rent: adjustedRent,
       salary_rent_burden: burden,
       salary_rent_burden_percent: burden * 100,
       salary_category: categoryFromBurden(burden),
       monthly_budget: monthlyBudget,
-      over_budget: overBudget
+      over_budget: overBudget,
+      required_income: adjustedRent * 12 / 0.30
     };
   });
 }
 
 function getSalaryStateData(salary) {
+  const rentMultiplier = getRentMultiplier();
   const monthlyIncome = salary / 12;
 
   return STATE_DATA.map(d => {
-    const burden = d.avg_monthly_rent / monthlyIncome;
+    const adjustedRent = d.avg_monthly_rent * rentMultiplier;
+    const burden = adjustedRent / monthlyIncome;
 
     return {
       ...d,
+      display_rent: adjustedRent,
       salary_rent_burden: burden,
       salary_rent_burden_percent: burden * 100,
       salary_category: categoryFromBurden(burden)
@@ -602,7 +624,6 @@ function getSalaryStateData(salary) {
 
 function drawSalaryMap(stateData, salary) {
   const { svg, W, H } = chartFrame("chart1", 480);
-
   const dataByFips = new Map(stateData.map(d => [d.fips, d]));
 
   const projection = d3.geoAlbersUsa()
@@ -632,18 +653,26 @@ function drawSalaryMap(stateData, salary) {
       const row = dataByFips.get(fips);
       if (!row) return;
 
+      let tooltipHtml = `
+        <strong>${row.state}</strong><br>
+        Selected income: ${formatDollar(salary)}<br>
+        Avg monthly rent: ${formatDollar(row.display_rent)}<br>
+        Rent burden: ${formatPercent(row.salary_rent_burden_percent)}<br>
+        Category: ${row.salary_category}
+      `;
+
+      // If family mode is active, inject the actual empirical cost of living from the uploaded dataset
+      const type = document.getElementById("incomeType").value;
+      if (type === "family4" && FAMILY_STATE_BUDGETS.has(row.state)) {
+        const epiMetrics = FAMILY_STATE_BUDGETS.get(row.state);
+        tooltipHtml += `<br><span style="color:var(--blue)">EPI Family Required Income:</span> ${formatDollar(epiMetrics.total_cost)}`;
+      }
+
       tooltip
         .style("opacity", 1)
         .style("left", event.clientX + 14 + "px")
         .style("top", event.clientY + 14 + "px")
-        .html(`
-          <strong>${row.state}</strong><br>
-          Selected income: ${formatDollar(salary)}<br>
-          Avg monthly rent: ${formatDollar(row.avg_monthly_rent)}<br>
-          Rent burden: ${formatPercent(row.salary_rent_burden_percent)}<br>
-          Category: ${row.salary_category}<br>
-          ZIPs included: ${row.zip_count}
-        `);
+        .html(tooltipHtml);
     })
     .on("mouseleave", () => tooltip.style("opacity", 0));
 
@@ -769,9 +798,9 @@ function drawRequiredIncome(zipData) {
         .style("top", event.clientY + 14 + "px")
         .html(`
           <strong>${d.zip} — ${d.city}, ${d.state}</strong><br>
-          Monthly rent: ${formatDollar(d.monthly_rent)}<br>
+          Monthly rent: ${formatDollar(d.display_rent)}<br>
           Income needed for 30% rule: ${formatDollar(d.required_income)}<br>
-          Local avg income: ${formatDollar(d.avg_annual_income)}
+          Local avg individual income: ${formatDollar(d.avg_annual_income)}
         `);
     })
     .on("mouseleave", () => tooltip.style("opacity", 0));
@@ -908,10 +937,11 @@ function drawOverBudget(zipData, salary) {
 }
 
 function drawAffordableBySalary(zipBase, currentSalary) {
+  const rentMultiplier = getRentMultiplier();
   const salaries = d3.range(30000, 250001, 5000).map(salary => {
     const monthlyIncome = salary / 12;
-    const affordable = zipBase.filter(d => d.monthly_rent / monthlyIncome <= 0.30).length;
-    const borderline = zipBase.filter(d => d.monthly_rent / monthlyIncome <= 0.40).length;
+    const affordable = zipBase.filter(d => (d.monthly_rent * rentMultiplier) / monthlyIncome <= 0.30).length;
+    const borderline = zipBase.filter(d => (d.monthly_rent * rentMultiplier) / monthlyIncome <= 0.40).length;
 
     return { salary, affordable, borderline };
   });
@@ -1007,19 +1037,28 @@ function drawAffordableBySalary(zipBase, currentSalary) {
 }
 
 function showZipTooltip(event, d, salary) {
+  let tooltipHtml = `
+    <strong>${d.zip} — ${d.city}, ${d.state}</strong><br>
+    Selected income: ${formatDollar(salary)}<br>
+    Monthly rent: ${formatDollar(d.display_rent)}<br>
+    Monthly budget: ${formatDollar(d.monthly_budget)}<br>
+    Rent burden: ${formatPercent(d.salary_rent_burden_percent)}<br>
+    Required income: ${formatDollar(d.required_income)}<br>
+    Local avg individual income: ${formatDollar(d.avg_annual_income)}
+  `;
+
+  // Inject localized state benchmark logic context if family type checked
+  const type = document.getElementById("incomeType").value;
+  if (type === "family4" && FAMILY_STATE_BUDGETS.has(d.state)) {
+    const epiMetrics = FAMILY_STATE_BUDGETS.get(d.state);
+    tooltipHtml += `<br><span style="color:var(--blue)">EPI Family Required Income:</span> ${formatDollar(epiMetrics.total_cost)}`;
+  }
+
   tooltip
     .style("opacity", 1)
     .style("left", event.clientX + 14 + "px")
     .style("top", event.clientY + 14 + "px")
-    .html(`
-      <strong>${d.zip} — ${d.city}, ${d.state}</strong><br>
-      Selected income: ${formatDollar(salary)}<br>
-      Monthly rent: ${formatDollar(d.monthly_rent)}<br>
-      Monthly budget: ${formatDollar(d.monthly_budget)}<br>
-      Rent burden: ${formatPercent(d.salary_rent_burden_percent)}<br>
-      Required income: ${formatDollar(d.required_income)}<br>
-      Local avg income: ${formatDollar(d.avg_annual_income)}
-    `);
+    .html(tooltipHtml);
 }
 
 function populateStateDropdown() {
@@ -1057,13 +1096,40 @@ function updateCharts(salary) {
 Promise.all([
   d3.csv(ZIP_FILE),
   d3.csv(STATE_FILE),
-  d3.json("https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json")
-]).then(([zipRaw, stateRaw, us]) => {
+  d3.json("https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json"),
+  d3.csv(COUNTY_FILE) // Async loading for your new dataset
+]).then(([zipRaw, stateRaw, us, colRaw]) => {
   const cleaned = cleanData(zipRaw, stateRaw);
 
   ZIP_DATA = cleaned.zipData;
   STATE_DATA = cleaned.stateData;
   US_STATES = topojson.feature(us, us.objects.states).features;
+
+  // Process Cost of Living Dataset (EPI)
+  if (colRaw) {
+    // Filter down strictly to the Family of 4 configuration
+    const family4Rows = colRaw.filter(d => d.family_member_count === '2p2c' || d.family === '2p2c');
+    
+    // Roll up county listings into average metrics across states
+    const stateGroups = d3.groups(family4Rows, d => d.state);
+    stateGroups.forEach(([stateCode, counties]) => {
+      const avgTotalCost = d3.mean(counties, c => +c.total_cost || +c.total_annual_cost);
+      const avgHousingCost = d3.mean(counties, c => +c.housing_cost);
+      const avgMedianIncome = d3.mean(counties, c => +c.median_family_income || +c.median_income);
+      
+      FAMILY_STATE_BUDGETS.set(stateCode, {
+        total_cost: avgTotalCost,
+        housing_cost: avgHousingCost,
+        median_family_income: avgMedianIncome
+      });
+    });
+
+    // Compute dynamic default target parameters across your map selection profiles
+    const nationalMedianCalc = d3.median(family4Rows, d => +d.median_family_income || +d.median_income);
+    if (isFinite(nationalMedianCalc) && nationalMedianCalc > 0) {
+      NATIONAL_FAMILY_MEDIAN = nationalMedianCalc;
+    }
+  }
 
   populateStateDropdown();
 
@@ -1072,6 +1138,7 @@ Promise.all([
 
   const slider = document.getElementById("salarySlider");
   const stateSelect = document.getElementById("stateSelect");
+  const incomeTypeDropdown = document.getElementById("incomeType");
 
   updateCharts(+slider.value);
 
@@ -1083,10 +1150,19 @@ Promise.all([
     updateCharts(+slider.value);
   });
 
+  incomeTypeDropdown.addEventListener("change", function() {
+    if (this.value === "family4") {
+      slider.value = NATIONAL_FAMILY_MEDIAN; // Snap directly onto empirical target criteria boundaries
+    } else {
+      slider.value = 75000;
+    }
+    updateCharts(+slider.value);
+  });
+
 }).catch(err => {
   console.error(err);
   document.getElementById("loading").textContent =
-    "DATA LOAD FAILED. Make sure your folder is set up as: CanILiveThere/index.html and CanILiveThere/datasets/rent_income_zip_clean.csv + rent_income_state_clean.csv. Also run this with Live Server.";
+    "DATA LOAD FAILED. Ensure path routing matches expected project schema properties.";
 });
 </script>
 </body>
